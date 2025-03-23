@@ -44,16 +44,20 @@ const formatDateTime = (timestamp: any) => {
   }
 };
 
+// Definindo tipos para status
+type OrderStatus = 'pending' | 'paid' | 'delivered' | 'cancelled';
+type StatusFilterType = OrderStatus | 'all';
+
 interface OrderDetailsModalProps {
   order: Order;
   onClose: () => void;
-  onStatusChange: (orderId: string, newStatus: string) => Promise<void>;
+  onStatusChange: (orderId: string, newStatus: OrderStatus) => Promise<void>;
   formatDateTime: (timestamp: any) => string;
 }
 
 function OrderDetailsModal({ order, onClose, onStatusChange, formatDateTime }: OrderDetailsModalProps) {
   const [loading, setLoading] = useState(false);
-  const [newStatus, setNewStatus] = useState(order.status);
+  const [newStatus, setNewStatus] = useState<OrderStatus>(order.status as OrderStatus);
   const { isAdmin } = useAuth();
 
   const handleStatusChange = async () => {
@@ -138,7 +142,7 @@ function OrderDetailsModal({ order, onClose, onStatusChange, formatDateTime }: O
                 <div className="flex items-center space-x-4">
                   <select
                     value={newStatus}
-                    onChange={(e) => setNewStatus(e.target.value)}
+                    onChange={(e) => setNewStatus(e.target.value as OrderStatus)}
                     className="rounded-md border-gray-300 shadow-sm focus:border-primary focus:ring focus:ring-primary focus:ring-opacity-50"
                   >
                     <option value="pending">Pendente</option>
@@ -175,7 +179,7 @@ export default function Orders() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<StatusFilterType>('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
 
@@ -196,18 +200,22 @@ export default function Orders() {
       setError(null);
       const ordersRef = collection(db, 'orders');
       
+      console.log('Iniciando busca de pedidos...', { isAdmin, statusFilter, userId: user.id });
+      
       // Build query based on user role and filters
       let baseQuery;
       
       if (isAdmin) {
         // Admin can see all orders
         if (statusFilter !== 'all') {
+          console.log('Consultando pedidos de admin com filtro de status:', statusFilter);
           baseQuery = query(
             ordersRef,
             where('status', '==', statusFilter),
             orderBy('created_at', 'desc')
           );
         } else {
+          console.log('Consultando todos os pedidos como admin');
           baseQuery = query(
             ordersRef,
             orderBy('created_at', 'desc')
@@ -216,6 +224,7 @@ export default function Orders() {
       } else {
         // Regular users can only see their own orders
         if (statusFilter !== 'all') {
+          console.log('Consultando pedidos do usuário com filtro de status:', { userId: user.id, status: statusFilter });
           baseQuery = query(
             ordersRef,
             where('user_id', '==', user.id),
@@ -223,6 +232,7 @@ export default function Orders() {
             orderBy('created_at', 'desc')
           );
         } else {
+          console.log('Consultando todos os pedidos do usuário:', user.id);
           baseQuery = query(
             ordersRef,
             where('user_id', '==', user.id),
@@ -231,35 +241,52 @@ export default function Orders() {
         }
       }
 
-      const querySnapshot = await getDocs(baseQuery);
-      const ordersData = await Promise.all(
-        querySnapshot.docs.map(async (orderDoc) => {
-          const orderData = orderDoc.data();
-          
-          // Get customer profile
-          const profileRef = doc(db, 'profiles', orderData.user_id);
-          const profileSnap = await getDoc(profileRef);
-          const customerName = profileSnap.exists() ? profileSnap.data().fullName : 'Cliente não encontrado';
+      try {
+        const querySnapshot = await getDocs(baseQuery);
+        console.log(`Encontrados ${querySnapshot.size} pedidos`);
+        
+        const ordersData = await Promise.all(
+          querySnapshot.docs.map(async (orderDoc) => {
+            const orderData = orderDoc.data();
+            
+            // Get customer profile
+            try {
+              const profileRef = doc(db, 'profiles', orderData.user_id);
+              const profileSnap = await getDoc(profileRef);
+              const customerName = profileSnap.exists() ? profileSnap.data().fullName : 'Cliente não encontrado';
 
-          return {
-            id: orderDoc.id,
-            ...orderData,
-            customerName
-          } as Order;
-        })
-      );
+              return {
+                id: orderDoc.id,
+                ...orderData,
+                customerName
+              } as Order;
+            } catch (profileError) {
+              console.error('Erro ao buscar perfil do cliente:', profileError);
+              return {
+                id: orderDoc.id,
+                ...orderData,
+                customerName: 'Erro ao buscar cliente'
+              } as Order;
+            }
+          })
+        );
 
-      setOrders(ordersData);
+        setOrders(ordersData);
+      } catch (queryError: any) {
+        console.error('Erro na consulta do Firestore:', queryError);
+        setError(`Erro na consulta: ${queryError.message || 'Desconhecido'}`);
+        toast.error('Erro ao buscar pedidos no banco de dados');
+      }
     } catch (err: any) {
       console.error('Erro ao carregar pedidos:', err);
-      setError('Erro ao carregar pedidos. Por favor, tente novamente.');
+      setError(`Erro ao carregar pedidos: ${err.message || 'Desconhecido'}`);
       toast.error('Erro ao carregar pedidos');
     } finally {
       setLoading(false);
     }
   }
 
-  const handleStatusChange = async (orderId: string, newStatus: string) => {
+  const handleStatusChange = async (orderId: string, newStatus: OrderStatus) => {
     if (!isAdmin) return;
 
     try {
@@ -340,7 +367,7 @@ export default function Orders() {
             {/* Status Filter */}
             <select
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
+              onChange={(e) => setStatusFilter(e.target.value as StatusFilterType)}
               className="rounded-md border-gray-300 shadow-sm focus:border-primary focus:ring focus:ring-primary focus:ring-opacity-50"
             >
               <option value="all">Todos os Status</option>

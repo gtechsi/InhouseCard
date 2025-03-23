@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Instruções para Criar Índices no Firestore</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #1a73e8;
+            border-bottom: 2px solid #1a73e8;
+            padding-bottom: 10px;
+        }
+        .instructions {
+            background-color: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .index {
+            background-color: #fff;
+            padding: 15px;
+            border-left: 3px solid #1a73e8;
+            margin-bottom: 15px;
+        }
+        .important {
+            background-color: #fef9e7;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 3px solid #f39c12;
+        }
+        a {
+            color: #1a73e8;
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <h1>Instruções para Criar Índices no Firestore</h1>
+    
+    <div class="instructions">
+        <p>Para criar os índices necessários para a aplicação, acesse o console do Firebase:</p>
+        <p><a href="https://console.firebase.google.com/project/inhousecard-a17c9/firestore/indexes" target="_blank">https://console.firebase.google.com/project/inhousecard-a17c9/firestore/indexes</a></p>
+    </div>
+    
+    <h2>Você precisa criar os seguintes índices compostos:</h2>
+    
+    <div class="index">
+        <h3>1) Coleção: "orders"</h3>
+        <p>Campos:</p>
+        <ul>
+            <li>user_id (Ascending)</li>
+            <li>status (Ascending)</li>
+            <li>created_at (Descending)</li>
+        </ul>
+    </div>
+    
+    <div class="index">
+        <h3>2) Coleção: "orders"</h3>
+        <p>Campos:</p>
+        <ul>
+            <li>user_id (Ascending)</li>
+            <li>created_at (Descending)</li>
+        </ul>
+    </div>
+    
+    <div class="index">
+        <h3>3) Coleção: "orders"</h3>
+        <p>Campos:</p>
+        <ul>
+            <li>status (Ascending)</li>
+            <li>created_at (Descending)</li>
+        </ul>
+    </div>
+    
+    <div class="important">
+        <h3>IMPORTANTE:</h3>
+        <p>Após criar os índices, aguarde alguns minutos para que eles sejam construídos.</p>
+        <p>Então tente acessar a página de pedidos novamente na aplicação.</p>
+    </div>
+</body>
+</html> 

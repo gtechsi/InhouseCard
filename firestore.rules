@@ -1,89 +1,16 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Helper functions
-    function isAuthenticated() {
-      return request.auth != null;
+    // Permite acesso total às collections webhook_logs e orders
+    match /webhook_logs/{document=**} {
+      allow read, write: if true;
     }
-    
-    function isAdmin() {
-      return isAuthenticated() && 
-        get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.role == 'admin';
+    match /orders/{document=**} {
+      allow read, write: if true;
     }
-    
-    function isOwner(userId) {
-      return isAuthenticated() && request.auth.uid == userId;
-    }
-
-    // Orders collection
-    match /orders/{orderId} {
-      allow read: if isAuthenticated() && (
-        resource.data.user_id == request.auth.uid || isAdmin()
-      );
-      allow create: if isAuthenticated() && (
-        request.resource.data.user_id == request.auth.uid &&
-        request.resource.data.status == 'pending'
-      );
-      allow update: if isAuthenticated() && (
-        (resource.data.user_id == request.auth.uid && 
-         (resource.data.status == 'pending' || 
-          request.resource.data.status in ['paid', 'cancelled'])) ||
-        isAdmin()
-      );
-      allow delete: if isAdmin();
-    }
-
-    // Order items collection
-    match /order_items/{itemId} {
-      allow read: if isAuthenticated() && (
-        get(/databases/$(database)/documents/orders/$(resource.data.orderId)).data.user_id == request.auth.uid ||
-        isAdmin()
-      );
-      allow create: if isAuthenticated() && 
-        get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.user_id == request.auth.uid;
-      allow update, delete: if isAdmin();
-    }
-
-    // Profiles collection
-    match /profiles/{userId} {
-      allow read: if true;
-      allow create: if isAuthenticated() && request.auth.uid == userId;
-      allow update: if isOwner(userId) || isAdmin();
-      allow delete: if isAdmin();
-    }
-
-    // Cards collection
-    match /cards/{cardId} {
-      allow read: if true;
-      allow create: if isAdmin();
-      allow update: if isAdmin() || 
-        (!resource.data.isActive) || 
-        (isAuthenticated() && resource.data.userId == request.auth.uid);
-      allow delete: if isAdmin();
-    }
-
-    // Card batches collection
-    match /card_batches/{batchId} {
-      allow read: if true;
-      allow write: if isAdmin();
-    }
-
-    // System settings collection
-    match /system_settings/{document=**} {
-      allow read: if true;
-      allow write: if isAdmin();
-    }
-
-    // Products collection
-    match /products/{productId} {
-      allow read: if true;
-      allow write: if isAdmin();
-    }
-
-    // Config collection
-    match /config/{document=**} {
-      allow read: if true;
-      allow write: if isAdmin();
+    // Outras regras para outras collections
+    match /{document=**} {
+      allow read, write: if request.auth != null;
     }
   }
 }
