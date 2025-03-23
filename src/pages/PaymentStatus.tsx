@@ -57,7 +57,7 @@ export default function PaymentStatus() {
         if (newStatus === 'paid') {
           toast.success(message);
         } else if (newStatus === 'pending') {
-          toast.info(message);
+          toast.success(message);
         } else {
           toast.error(message);
         }
