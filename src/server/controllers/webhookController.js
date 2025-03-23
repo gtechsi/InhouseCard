@@ -44,62 +44,90 @@ async function logWebhookEvent(data) {
 
 export const handleWebhook = async (req, res) => {
   try {
-    const { action, data } = req.body;
-
-    // Log the webhook payload
-    logger.info('Received webhook:', { action, data });
-
+    // Detectar formato do webhook
+    const body = req.body;
+    
+    // Log do payload recebido
+    logger.info('Webhook payload recebido:', JSON.stringify(body));
+    
+    // Extrair dados importantes com base no formato
+    let action, paymentId, notificationType;
+    
+    // Verificar se é o formato que inclui 'topic' e 'id' (formato feed)
+    if (body.topic && body.id) {
+      notificationType = body.topic;
+      action = body.topic === 'payment' ? 'payment.updated' : `${body.topic}.notification`;
+      paymentId = body.id;
+      logger.info(`Detectado formato feed: topic=${body.topic}, id=${body.id}`);
+    } 
+    // Formato tradicional com 'action' e 'data.id'
+    else if (body.action && body.data && body.data.id) {
+      action = body.action;
+      paymentId = body.data.id;
+      notificationType = 'standard';
+      logger.info(`Detectado formato padrão: action=${action}, data.id=${paymentId}`);
+    }
+    // Outro formato desconhecido
+    else {
+      logger.warn('Formato de webhook não reconhecido:', JSON.stringify(body));
+      
+      // Tentar encontrar qualquer ID de pagamento na requisição
+      paymentId = body.id || (body.data && body.data.id) || 'unknown';
+      action = 'unknown';
+      notificationType = 'unknown';
+    }
+    
     // Registrar no Firestore para monitoramento
     await logWebhookEvent({
       action,
-      paymentId: data.id,
+      paymentId,
+      notificationType,
       status: 'received',
-      details: req.body
+      details: body
     });
-
-    // Processar notificações de pagamento
-    if (action === 'payment.created' || action === 'payment.updated') {
-      const paymentId = data.id;
-      
+    
+    // Processar notificações de pagamento (qualquer formato)
+    if (paymentId !== 'unknown' && (action.includes('payment') || notificationType === 'payment' || notificationType === 'merchant_order')) {
       // Obter detalhes do pagamento do Mercado Pago
       let paymentInfo;
       try {
         paymentInfo = await payment.get({ id: paymentId });
-        logger.info('Payment details retrieved:', { 
+        logger.info('Detalhes do pagamento obtidos:', { 
           id: paymentInfo.id,
           status: paymentInfo.status,
           external_reference: paymentInfo.external_reference
         });
       } catch (error) {
-        logger.error('Failed to get payment info from Mercado Pago:', error);
+        logger.error('Falha ao obter informações do pagamento do Mercado Pago:', error);
         
         // Registrar erro ao buscar informações de pagamento
         await logWebhookEvent({
           action,
-          paymentId: data.id,
+          paymentId,
+          notificationType,
           status: 'error',
           orderId: null,
-          details: { error: 'Failed to get payment info from Mercado Pago' }
+          details: { error: 'Falha ao obter informações do pagamento do Mercado Pago' }
         });
         
-        return res.status(500).json({ error: 'Error retrieving payment information' });
+        return res.status(500).json({ error: 'Erro ao recuperar informações do pagamento' });
       }
       
       // Obter referência do pedido
       const orderId = paymentInfo.external_reference;
       if (!orderId) {
-        logger.error('Order reference not found in payment data');
+        logger.error('Referência do pedido não encontrada nos dados do pagamento');
         
         // Registrar erro de referência de pedido não encontrada
         await logWebhookEvent({
           action,
-          paymentId: data.id,
+          paymentId,
           status: 'error',
           orderId: null,
-          details: { error: 'Order reference not found in payment data' }
+          details: { error: 'Referência do pedido não encontrada nos dados do pagamento' }
         });
         
-        return res.status(400).json({ error: 'Order reference not found' });
+        return res.status(400).json({ error: 'Referência do pedido não encontrada' });
       }
 
       // Buscar pedido no Firestore
@@ -108,49 +136,49 @@ export const handleWebhook = async (req, res) => {
         const orderDoc = await getDoc(orderRef);
 
         if (!orderDoc.exists()) {
-          logger.error(`Order ${orderId} not found in database`);
+          logger.error(`Pedido ${orderId} não encontrado no banco de dados`);
           
           // Registrar erro de pedido não encontrado
           await logWebhookEvent({
             action,
-            paymentId: data.id,
+            paymentId,
             status: 'error',
             orderId,
-            details: { error: 'Order not found in database' }
+            details: { error: 'Pedido não encontrado no banco de dados' }
           });
           
-          return res.status(404).json({ error: 'Order not found' });
+          return res.status(404).json({ error: 'Pedido não encontrado' });
         }
         
         const orderData = orderDoc.data();
-        logger.info(`Order ${orderId} found. Current status: ${orderData.status}`);
+        logger.info(`Pedido ${orderId} encontrado. Status atual: ${orderData.status}`);
 
         // Processar apenas se o status for diferente
-        if (orderData.payment_status !== paymentInfo.status) {
+        if (!orderData.payment_status || orderData.payment_status !== paymentInfo.status) {
           // Determinar novo status
           let newStatus;
           switch (paymentInfo.status) {
             case 'approved':
               newStatus = 'paid';
-              logger.info(`Payment approved for order ${orderId}`);
+              logger.info(`Pagamento aprovado para o pedido ${orderId}`);
               break;
             case 'pending':
               newStatus = 'pending';
-              logger.info(`Payment pending for order ${orderId}`);
+              logger.info(`Pagamento pendente para o pedido ${orderId}`);
               break;
             case 'rejected':
             case 'cancelled':
             case 'refunded':
               newStatus = 'cancelled';
-              logger.info(`Payment ${paymentInfo.status} for order ${orderId}`);
+              logger.info(`Pagamento ${paymentInfo.status} para o pedido ${orderId}`);
               break;
             case 'in_process':
               newStatus = 'pending';
-              logger.info(`Payment in process for order ${orderId}`);
+              logger.info(`Pagamento em processamento para o pedido ${orderId}`);
               break;
             default:
               newStatus = 'pending';
-              logger.info(`Unknown payment status: ${paymentInfo.status} for order ${orderId}`);
+              logger.info(`Status de pagamento desconhecido: ${paymentInfo.status} para o pedido ${orderId}`);
           }
 
           // Atualizar status do pedido
@@ -170,12 +198,12 @@ export const handleWebhook = async (req, res) => {
             }
           });
 
-          logger.info(`Order ${orderId} status updated from ${orderData.status} to ${newStatus}`);
+          logger.info(`Status do pedido ${orderId} atualizado de ${orderData.status} para ${newStatus}`);
           
           // Registrar atualização bem-sucedida
           await logWebhookEvent({
             action,
-            paymentId: data.id,
+            paymentId,
             status: 'success',
             orderId,
             details: {
@@ -185,44 +213,44 @@ export const handleWebhook = async (req, res) => {
             }
           });
         } else {
-          logger.info(`Order ${orderId} payment status already up to date (${paymentInfo.status})`);
+          logger.info(`Status de pagamento do pedido ${orderId} já está atualizado (${paymentInfo.status})`);
           
           // Registrar status já atualizado
           await logWebhookEvent({
             action,
-            paymentId: data.id,
+            paymentId,
             status: 'info',
             orderId,
             details: { 
-              message: 'Payment status already up to date',
+              message: 'Status de pagamento já atualizado',
               currentStatus: orderData.status 
             }
           });
         }
       } catch (error) {
-        logger.error(`Error updating order ${orderId}:`, error);
+        logger.error(`Erro ao atualizar pedido ${orderId}:`, error);
         
         // Registrar erro ao atualizar pedido
         await logWebhookEvent({
           action,
-          paymentId: data.id,
+          paymentId,
           status: 'error',
           orderId,
-          details: { error: 'Error updating order status' }
+          details: { error: 'Erro ao atualizar status do pedido' }
         });
         
-        return res.status(500).json({ error: 'Error updating order status' });
+        return res.status(500).json({ error: 'Erro ao atualizar status do pedido' });
       }
     } else {
-      logger.info(`Ignoring webhook with action: ${action}`);
+      logger.info(`Ignorando webhook com tipo: ${notificationType}, ação: ${action}`);
       
       // Registrar ação desconhecida
       await logWebhookEvent({
         action,
-        paymentId: data?.id || 'unknown',
+        paymentId: paymentId || 'unknown',
         status: 'info',
         orderId: null,
-        details: { message: 'Ignored webhook with unknown action' }
+        details: { message: 'Webhook ignorado com tipo ou ação desconhecida' }
       });
     }
 
@@ -232,15 +260,15 @@ export const handleWebhook = async (req, res) => {
       received_at: new Date().toISOString()
     });
   } catch (error) {
-    logger.error('Error processing webhook:', error);
+    logger.error('Erro ao processar webhook:', error);
     
     // Registrar erro geral
     await logWebhookEvent({
-      action: req.body?.action || 'unknown',
-      paymentId: req.body?.data?.id || 'unknown',
+      action: req.body?.action || req.body?.topic || 'unknown',
+      paymentId: req.body?.data?.id || req.body?.id || 'unknown',
       status: 'error',
       orderId: null,
-      details: { error: 'Internal server error' }
+      details: { error: 'Erro interno do servidor' }
     });
     
     res.status(500).json({ error: 'Internal server error' });

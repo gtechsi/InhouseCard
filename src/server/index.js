@@ -35,6 +35,13 @@ app.use(errorHandler);
 app.listen(port, () => {
   logger.info(`Servidor rodando na porta ${port} em modo ${process.env.NODE_ENV || 'development'}`);
   logger.info(`Webhook disponível em: http://localhost:${port}/webhook`);
+  
+  // Mostrar URL de notificação configurada para o Mercado Pago
+  if (process.env.MP_NOTIFICATION_URL) {
+    logger.info(`URL de notificação do Mercado Pago configurada para: ${process.env.MP_NOTIFICATION_URL}`);
+  } else {
+    logger.warn('URL de notificação do Mercado Pago não configurada. Configure MP_NOTIFICATION_URL no arquivo .env');
+  }
 });
 
 export default app;
