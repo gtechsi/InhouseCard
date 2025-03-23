@@ -16,12 +16,25 @@ const __dirname = path.dirname(__filename);
 let db;
 if (!admin.apps.length) {
   try {
-    // Para desenvolvimento, inicializamos com configuração mínima
-    admin.initializeApp({
-      projectId: process.env.VITE_FIREBASE_PROJECT_ID,
-    });
-    
-    logger.info('Firebase Admin inicializado para desenvolvimento (sem credenciais)');
+    // Verificar se temos variáveis de ambiente para o Firebase Admin SDK
+    if (process.env.FIREBASE_PRIVATE_KEY && process.env.FIREBASE_CLIENT_EMAIL) {
+      admin.initializeApp({
+        credential: admin.credential.cert({
+          projectId: process.env.VITE_FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          // A chave privada vem com \n escapados como texto, precisamos convertê-los
+          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        }),
+        databaseURL: `https://${process.env.VITE_FIREBASE_PROJECT_ID}.firebaseio.com`
+      });
+      logger.info('Firebase Admin inicializado com credenciais completas');
+    } else {
+      // Inicialização mínima para desenvolvimento
+      admin.initializeApp({
+        projectId: process.env.VITE_FIREBASE_PROJECT_ID,
+      });
+      logger.info('Firebase Admin inicializado para desenvolvimento (sem credenciais)');
+    }
   } catch (error) {
     logger.error('Erro ao inicializar Firebase Admin:', error);
     process.exit(1); // Falha crítica, encerrar o aplicativo
@@ -68,20 +81,20 @@ export const handleWebhook = async (req, res) => {
     if (body.topic && body.id) {
       notificationType = body.topic;
       action = body.topic === 'payment' ? 'payment.updated' : `${body.topic}.notification`;
-      paymentId = body.id;
+      paymentId = body.id.toString();
       logger.info(`Detectado formato feed: topic=${body.topic}, id=${body.id}`);
     } 
     // Formato tradicional com 'action' e 'data.id'
     else if (body.action && body.data && body.data.id) {
       action = body.action;
-      paymentId = body.data.id;
+      paymentId = body.data.id.toString();
       notificationType = 'standard';
       logger.info(`Detectado formato padrão: action=${action}, data.id=${paymentId}`);
     }
     // Tenta extrair do formato mais recente da API v2
     else if (body.type && body.data) {
       action = body.type;
-      paymentId = body.data.id;
+      paymentId = body.data.id.toString();
       notificationType = 'api_v2';
       logger.info(`Detectado formato API v2: type=${body.type}, data.id=${paymentId}`);
     }
@@ -90,7 +103,7 @@ export const handleWebhook = async (req, res) => {
       logger.warn('Formato de webhook não reconhecido:', JSON.stringify(body));
       
       // Tentar encontrar qualquer ID de pagamento na requisição
-      paymentId = body.id || (body.data && body.data.id) || 'unknown';
+      paymentId = (body.id || (body.data && body.data.id) || 'unknown').toString();
       action = 'unknown';
       notificationType = 'unknown';
     }
@@ -101,7 +114,8 @@ export const handleWebhook = async (req, res) => {
       paymentId,
       notificationType,
       status: 'received',
-      details: body
+      details: body,
+      received_at: new Date().toISOString()
     });
     
     // Processar notificações de pagamento (qualquer formato)
@@ -135,7 +149,7 @@ export const handleWebhook = async (req, res) => {
           details: { error: 'Falha ao obter informações do pagamento do Mercado Pago', message: error.message }
         });
         
-        return res.status(500).json({ error: 'Erro ao recuperar informações do pagamento' });
+        return res.status(200).json({ error: 'Erro ao recuperar informações do pagamento', processed: false });
       }
       
       // Obter referência do pedido
@@ -155,7 +169,7 @@ export const handleWebhook = async (req, res) => {
           }
         });
         
-        return res.status(400).json({ error: 'Referência do pedido não encontrada' });
+        return res.status(200).json({ error: 'Referência do pedido não encontrada', processed: false });
       }
 
       // Buscar pedido no Firestore
@@ -175,13 +189,13 @@ export const handleWebhook = async (req, res) => {
             details: { error: 'Pedido não encontrado no banco de dados' }
           });
           
-          return res.status(404).json({ error: 'Pedido não encontrado' });
+          return res.status(200).json({ error: 'Pedido não encontrado', processed: false });
         }
         
         const orderData = orderDoc.data();
         logger.info(`Pedido ${orderId} encontrado. Status atual: ${orderData.status}, Payment Status: ${orderData.payment_status}`);
 
-        // Processar a atualização independentemente do status atual (forçar atualização)
+        // Garantir que podemos processar o status mesmo se não mudar (força atualização)
         // Determinar novo status com base no status do pagamento
         let newStatus;
         switch (paymentInfo.status) {
@@ -196,11 +210,13 @@ export const handleWebhook = async (req, res) => {
           case 'rejected':
           case 'cancelled':
           case 'refunded':
+          case 'charged_back':
             newStatus = 'cancelled';
             logger.info(`Pagamento ${paymentInfo.status} para o pedido ${orderId}`);
             break;
           case 'in_process':
           case 'in_mediation':
+          case 'authorized':
             newStatus = 'pending';
             logger.info(`Pagamento em processamento (${paymentInfo.status}) para o pedido ${orderId}`);
             break;
@@ -209,58 +225,41 @@ export const handleWebhook = async (req, res) => {
             logger.info(`Status de pagamento desconhecido: ${paymentInfo.status} para o pedido ${orderId}`);
         }
 
-        // Verificar se o status realmente mudou
-        if (orderData.status !== newStatus || orderData.payment_status !== paymentInfo.status) {
-          // Atualizar status do pedido
-          await orderRef.update({
-            status: newStatus,
-            payment_id: paymentInfo.id,
-            payment_status: paymentInfo.status,
-            payment_method: paymentInfo.payment_method_id,
-            payment_confirmed_at: admin.firestore.FieldValue.serverTimestamp(),
-            updated_at: admin.firestore.FieldValue.serverTimestamp(),
-            payment_details: {
-              status_detail: paymentInfo.status_detail,
-              payment_type_id: paymentInfo.payment_type_id,
-              payment_method_id: paymentInfo.payment_method_id,
-              transaction_amount: paymentInfo.transaction_amount,
-              installments: paymentInfo.installments
-            }
-          });
+        // Sempre atualizar mesmo que o status não mude
+        // Isso garante que qualquer possível problema no banco seja corrigido
+        await orderRef.update({
+          status: newStatus,
+          payment_id: paymentInfo.id,
+          payment_status: paymentInfo.status,
+          payment_method: paymentInfo.payment_method_id,
+          payment_confirmed_at: admin.firestore.FieldValue.serverTimestamp(),
+          updated_at: admin.firestore.FieldValue.serverTimestamp(),
+          payment_details: {
+            status_detail: paymentInfo.status_detail,
+            payment_type_id: paymentInfo.payment_type_id,
+            payment_method_id: paymentInfo.payment_method_id,
+            transaction_amount: paymentInfo.transaction_amount,
+            installments: paymentInfo.installments
+          }
+        });
 
-          logger.info(`Status do pedido ${orderId} atualizado de ${orderData.status} para ${newStatus}`);
+        logger.info(`Status do pedido ${orderId} atualizado para ${newStatus} (payment_status: ${paymentInfo.status})`);
           
-          // Registrar atualização bem-sucedida
-          await logWebhookEvent({
-            action,
-            paymentId,
-            status: 'success',
-            orderId,
-            details: {
-              oldStatus: orderData.status,
-              newStatus,
-              oldPaymentStatus: orderData.payment_status,
-              newPaymentStatus: paymentInfo.status
-            }
-          });
+        // Registrar atualização bem-sucedida
+        await logWebhookEvent({
+          action,
+          paymentId,
+          status: 'success',
+          orderId,
+          details: {
+            oldStatus: orderData.status,
+            newStatus,
+            oldPaymentStatus: orderData.payment_status,
+            newPaymentStatus: paymentInfo.status
+          }
+        });
           
-          logger.info(`Atualização do pedido ${orderId} concluída com sucesso`);
-        } else {
-          logger.info(`Status de pagamento do pedido ${orderId} já está atualizado (${paymentInfo.status})`);
-          
-          // Registrar status já atualizado
-          await logWebhookEvent({
-            action,
-            paymentId,
-            status: 'info',
-            orderId,
-            details: { 
-              message: 'Status de pagamento já atualizado',
-              currentStatus: orderData.status,
-              currentPaymentStatus: orderData.payment_status
-            }
-          });
-        }
+        logger.info(`Atualização do pedido ${orderId} concluída com sucesso`);
       } catch (error) {
         logger.error(`Erro ao atualizar pedido ${orderId}:`, error);
         
@@ -273,7 +272,7 @@ export const handleWebhook = async (req, res) => {
           details: { error: 'Erro ao atualizar status do pedido', message: error.message }
         });
         
-        return res.status(500).json({ error: 'Erro ao atualizar status do pedido' });
+        return res.status(200).json({ error: 'Erro ao atualizar status do pedido', processed: false });
       }
     } else {
       logger.info(`Ignorando webhook com tipo: ${notificationType}, ação: ${action}`);
@@ -291,7 +290,8 @@ export const handleWebhook = async (req, res) => {
     // Enviar resposta de sucesso
     res.status(200).json({ 
       message: 'Webhook processed successfully',
-      received_at: new Date().toISOString()
+      received_at: new Date().toISOString(),
+      processed: true
     });
   } catch (error) {
     logger.error('Erro ao processar webhook:', error);
@@ -305,6 +305,7 @@ export const handleWebhook = async (req, res) => {
       details: { error: 'Erro interno do servidor', message: error.message }
     });
     
-    res.status(500).json({ error: 'Internal server error' });
+    // Mesmo com erro, devolvemos 200 para o Mercado Pago não retentar
+    res.status(200).json({ error: 'Internal server error', processed: false });
   }
 };
